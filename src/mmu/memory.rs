@@ -278,4 +278,64 @@ mod tests {
             assert!(!memory.is_mapped((first_page + expected_pages as u64) * PAGE_SIZE as u64));
         }
     }
+
+    #[test]
+    fn test_read_write_bytes_across_unaligned_mapped_pages() {
+        let mut memory = Memory::new();
+        let base_addr = 0x1FFF;
+        let data: Vec<u8> = (0..PAGE_SIZE + 2).map(|i| i as u8).collect();
+        memory.map_range(base_addr, data.len(), Permission::READ_WRITE);
+
+        memory.write_bytes(base_addr, &data).unwrap();
+        let mut actual = vec![0; data.len()];
+        memory.read_bytes(base_addr, &mut actual).unwrap();
+        assert_eq!(actual, data);
+    }
+
+    #[test]
+    fn test_read_write_scalar_across_page_boundary() {
+        let mut memory = Memory::new();
+        memory.map_range(0x1FFC, 8, Permission::READ_WRITE);
+
+        memory.write_u64(0x1FFC, 0x0123_4567_89AB_CDEF).unwrap();
+        assert_eq!(memory.read_u64(0x1FFC).unwrap(), 0x0123_4567_89AB_CDEF);
+        assert_eq!(memory.read_u32(0x2000).unwrap(), 0x0123_4567);
+    }
+
+    #[test]
+    fn test_read_only_permissions_apply_to_every_mapped_page() {
+        let mut memory = Memory::new();
+        memory.map_range(0x1FFF, 2, Permission::READ_ONLY);
+
+        let mut actual = [1; 2];
+        memory.read_bytes(0x1FFF, &mut actual).unwrap();
+        assert_eq!(actual, [0; 2]);
+
+        for addr in [0x1FFF, 0x2000] {
+            assert!(matches!(
+                memory.write_u8(addr, 1),
+                Err(MemoryError::PermissionDenied {
+                    addr: denied_addr,
+                    required: "WRITE",
+                    actual: Permission::READ_ONLY,
+                }) if denied_addr == addr
+            ));
+            assert_eq!(memory.read_u8(addr).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn test_access_to_adjacent_unmapped_page_is_rejected() {
+        let mut memory = Memory::new();
+        memory.map_range(0x1FFF, 2, Permission::READ_WRITE);
+
+        assert!(matches!(
+            memory.read_u8(0x3000),
+            Err(MemoryError::Unmapped { addr: 0x3000 })
+        ));
+        assert!(matches!(
+            memory.write_u8(0x3000, 1),
+            Err(MemoryError::Unmapped { addr: 0x3000 })
+        ));
+    }
 }
