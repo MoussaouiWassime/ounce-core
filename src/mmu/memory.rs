@@ -338,4 +338,59 @@ mod tests {
             Err(MemoryError::Unmapped { addr: 0x3000 })
         ));
     }
+
+    #[test]
+    fn test_empty_range_does_not_map_or_replace_pages() {
+        let mut memory = Memory::new();
+        memory.map_range(0x1000, PAGE_SIZE, Permission::READ_WRITE);
+        memory.write_u8(0x1FFF, 42).unwrap();
+
+        for base_addr in [0, 0x1000, 0x1FFF, 0x2000, u64::MAX] {
+            memory.map_range(base_addr, 0, Permission::NONE);
+        }
+
+        assert_eq!(memory.pages.len(), 1);
+        assert_eq!(memory.read_u8(0x1FFF).unwrap(), 42);
+        memory.write_u8(0x1FFF, 43).unwrap();
+        assert_eq!(memory.read_u8(0x1FFF).unwrap(), 43);
+    }
+
+    #[test]
+    fn test_map_range_can_end_at_the_last_address() {
+        let cases = [
+            (u64::MAX, 1, 1),
+            (u64::MAX - PAGE_SIZE as u64 + 1, PAGE_SIZE, 1),
+            (u64::MAX - PAGE_SIZE as u64, PAGE_SIZE + 1, 2),
+        ];
+
+        for (base_addr, size, expected_pages) in cases {
+            let mut memory = Memory::new();
+            memory.map_range(base_addr, size, Permission::READ_WRITE);
+
+            assert_eq!(memory.pages.len(), expected_pages);
+            assert!(memory.is_mapped(base_addr));
+            assert!(memory.is_mapped(u64::MAX));
+            assert!(!memory.is_mapped(0));
+        }
+    }
+
+    #[test]
+    fn test_overflowing_range_is_rejected_before_mapping() {
+        let mut memory = Memory::new();
+        memory.map_range(0x1000, PAGE_SIZE, Permission::READ_WRITE);
+        memory.write_u8(0x1000, 42).unwrap();
+
+        for (base_addr, size) in [
+            (u64::MAX, 2),
+            (u64::MAX - PAGE_SIZE as u64 + 1, PAGE_SIZE + 1),
+        ] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                memory.map_range(base_addr, size, Permission::READ_WRITE);
+            }));
+
+            assert!(result.is_err());
+            assert_eq!(memory.pages.len(), 1);
+            assert_eq!(memory.read_u8(0x1000).unwrap(), 42);
+        }
+    }
 }
