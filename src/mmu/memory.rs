@@ -98,13 +98,23 @@ impl Memory {
         stats
     }
 
-    /// Allocate and map a contiguous virtual memory range.
+    /// Allocate every page intersecting a contiguous virtual memory range.
+    /// An empty range leaves existing mappings unchanged.
+    ///
+    /// # Panics
+    /// Panics before changing any mappings if the range exceeds the 64-bit address space.
     pub fn map_range(&mut self, base_addr: u64, size: usize, perm: Permission) {
-        let start_page = base_addr >> 12;
-        let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+        if size == 0 {
+            return;
+        }
 
-        for i in 0..num_pages {
-            let page_idx = start_page + i as u64;
+        let last_addr = base_addr
+            .checked_add((size - 1) as u64)
+            .expect("memory range exceeds the 64-bit address space");
+        let start_page = base_addr >> 12;
+        let last_page = last_addr >> 12;
+
+        for page_idx in start_page..=last_page {
             self.pages.insert(page_idx, Page::new(perm));
         }
     }
@@ -232,5 +242,40 @@ impl Memory {
         let mut buf = [0u8; 8];
         LittleEndian::write_u64(&mut buf, val);
         self.write_bytes(addr, &buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_range_covers_exactly_the_intersecting_pages() {
+        let cases = [
+            (0x0000, 1, 1),
+            (0x1000, PAGE_SIZE, 1),
+            (0x1000, PAGE_SIZE + 1, 2),
+            (0x1001, PAGE_SIZE - 1, 1),
+            (0x1001, PAGE_SIZE, 2),
+            (0x1FFF, 1, 1),
+            (0x1FFF, 2, 2),
+            (0x1FFF, PAGE_SIZE + 1, 2),
+            (0x1FFF, PAGE_SIZE + 2, 3),
+        ];
+
+        for (base_addr, size, expected_pages) in cases {
+            let mut memory = Memory::new();
+            memory.map_range(base_addr, size, Permission::READ_WRITE);
+
+            let first_page = base_addr >> 12;
+            assert_eq!(memory.pages.len(), expected_pages);
+            for page in first_page..first_page + expected_pages as u64 {
+                assert!(memory.is_mapped(page * PAGE_SIZE as u64));
+            }
+            if first_page > 0 {
+                assert!(!memory.is_mapped((first_page - 1) * PAGE_SIZE as u64));
+            }
+            assert!(!memory.is_mapped((first_page + expected_pages as u64) * PAGE_SIZE as u64));
+        }
     }
 }
